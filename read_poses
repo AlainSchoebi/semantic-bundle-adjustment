@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+
+# Python
+import logging
+import os.path
+
+# ROS
+import rosbag
+from geometry_msgs.msg import PoseArray
+from std_msgs.msg import Header
+
+# Utils
+from sba.utils.pose import Pose
+
+# Src
+from sba.tree_parser import TreeParser
+from sba.read_poses_utils import read_poses
+
+# Logging
+from sba.utils.loggers import get_logger
+import logging
+logger = get_logger(__name__)
+
+def main(args):
+
+    # Step up logging
+    logger.setLevel(logging.INFO)
+    get_logger("sba").setLevel(logging.DEBUG)
+    get_logger("sba.read_poses_utils").setLevel(logging.WARNING)
+
+    # Assert that all arguments have the same number of values
+    lengths = [len(args.input_files), len(args.formats), len(args.topics)]
+    if not lengths.count(lengths[0]) == len(lengths):
+        logger.error(f"In the arguments {len(args.input_files)} input files, {len(args.formats)} formats, "
+                     f"{len(args.topics)} topics were given, but they should contain the same number.")
+        raise ValueError(f"In the arguments {len(args.input_files)} input files, {len(args.formats)} formats, "
+                         f"{len(args.topics)} topics were given, but they should contain the same number.")
+
+    # Loop
+    camera_poses_array = []
+    for input_file, format in zip(args.input_files, args.formats):
+
+        # Read the camera poses
+        camera_poses = read_poses(input_file, format)
+        camera_poses_array.append(camera_poses)
+
+    # Checks if ROS bag file already exists
+    if os.path.exists(args.output_bag):
+        logger.info(f"Output ROS bag '{args.output_bag}' already exists and will be overwritten.")
+
+    # Create new bag file
+    with rosbag.Bag(args.output_bag, 'w') as bag:
+
+        # Loop
+        for camera_poses, topic in zip(camera_poses_array, args.topics):
+
+            # Define a ROS pose array
+            pose_array = PoseArray()
+            pose_array.header = Header(seq=0, stamp=None, frame_id="map")
+            camera_pose: Pose
+            for camera_pose in camera_poses:
+
+                # Append the ROS pose to the pose array
+                pose_array.poses.append(camera_pose.to_ros_pose())
+
+            # Save the pose array to the bag
+            bag.write(topic=topic, msg=pose_array, t=None)
+
+        logger.info(f"Finished writing to ROS bag '{args.output_bag}'.")
+        logger.info(f"The ROS bag '{args.output_bag}' will contain:")
+        for camera_poses, input_file, topic in zip(camera_poses_array, args.input_files, args.topics):
+            logger.info(f"  - {len(camera_poses)} camera poses in topic '{topic}' coming from '{input_file}'.")
+
+
+if __name__ == "__main__":
+
+    parser = TreeParser(
+        description="Saves extracted camera poses from any formats into a single ROS bag."
+    )
+
+    parser.add_argument("input_files", type=str, nargs='+',
+                        help = "Input files or folders containing the camera poses.")
+    parser.add_argument(
+        "--formats", type=str, nargs='+', required=False, default=["colmap_text"],
+        choices=["vulkan_text", "colmap_text", "colmap_model"],
+        help = "'vulkan_text': provide a .txt file generaed with Vulkan. " +
+               "'colmap_text': provide  a .txt file exported form COLMAP. " +
+               "'colmap_model': provide a folder model folder form COLMAP."
+    )
+
+    parser.add_argument("--topics", type=str, nargs='+', default = ["/camera_poses"],
+                        help = "topic names in the output bag containing the camera poses.")
+    parser.add_argument("--output_bag", "-o", type=str, default = "out/output.bag",
+                        help = "output bag file containing the camera poses.")
+
+    args = parser.parse_args()
+
+    main(args)

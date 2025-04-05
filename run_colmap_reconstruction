@@ -1,0 +1,99 @@
+#!/bin/bash
+
+# The dataset folder must be a 'result/' folder from vulkan.
+# That is, it must contain an 'output/' folder containing .h5 files.
+
+# Get dataset path and remove trailing slash if it exists
+DATASET_PATH="${1%/}"
+COLMAP_FOLDER=$DATASET_PATH/colmap
+COLMAP_RECONSTRUCTION=$COLMAP_FOLDER/sparse/0
+
+# Source code of semantic-ba
+SEMANTICBA="$(dirname "$(readlink -f "$0")")"
+
+echo "Provided dataset path '"$DATASET_PATH"'."
+
+# Dataset path verifications
+if [ ! -d $DATASET_PATH ]; then
+    echo "Dataset path '"$DATASET_PATH"' is not a directory. Please provide a valid path."
+    echo "Exiting."
+    exit 1
+fi
+if [ ! -d $DATASET_PATH"/output" ]; then
+   echo "Dataset path '"$DATASET_PATH"' does not contain any '/output' folder."
+   echo "Exiting."
+   exit 1
+fi
+
+# Rename images folder to avoid confusions
+if [ -d $DATASET_PATH"/images" ]; then
+   mv $DATASET_PATH"/images" $DATASET_PATH"/images_not_used"
+   echo "Renamed '$DATASET_PATH/images' to '$DATASET_PATH/images_not_used'".
+fi
+
+# Create directory
+mkdir -p $COLMAP_FOLDER
+
+# Run colmap feature extractor
+colmap feature_extractor \
+   --database_path $COLMAP_FOLDER/database.db \
+   --image_path $DATASET_PATH/output/color \
+   --ImageReader.camera_model SIMPLE_PINHOLE \
+   --ImageReader.single_camera false \
+   --ImageReader.camera_params 2559,1536,1152
+
+# Run colmap exhaustive matcher
+colmap exhaustive_matcher \
+   --database_path $COLMAP_FOLDER/database.db
+
+# Ask yes/no for colmap reconstruction
+read -p "Continue with reconstruction ? [y/n] " -n 1 -r
+echo  # move to a new line
+if ! [[ $REPLY =~ ^[Yy]$ ]]; then
+   echo "No reconstruction."
+   echo "Exiting."
+   exit 0
+fi
+
+# Run colmap reconstruction
+mkdir -p $COLMAP_FOLDER/sparse
+
+colmap mapper \
+   --database_path $COLMAP_FOLDER/database.db \
+   --image_path $DATASET_PATH/output/color \
+   --output_path $COLMAP_FOLDER/sparse \
+   --Mapper.ba_refine_focal_length false \
+   --Mapper.ba_refine_principal_point false \
+   --Mapper.ba_refine_extra_params false
+if [ $? -ne 0 ]; then
+   echo "Running COLMAP mapper failed with a non-zero exit status."
+   echo "Exiting."
+   exit 1
+fi
+
+# Export model as .txt files
+mkdir -p $COLMAP_FOLDER/text
+colmap model_converter \
+    --input_path $COLMAP_FOLDER/sparse/0/ \
+    --output_path $COLMAP_FOLDER/text \
+    --output_type TXT
+echo "Successfully exported the model as text files under '$COLMAP_FOLDER/text/'"
+
+# Read poses
+python3 $SEMANTICBA/read_poses \
+       "$DATASET_PATH/image_poses.txt" "$COLMAP_RECONSTRUCTION" \
+       --formats vulkan_text colmap_model \
+       --topics /vrg_crop_gen_poses /colmap_poses \
+       -o $SEMANTICBA/out/last_reconstruction.bag
+if [ $? -ne 0 ]; then
+   echo "Running read_poses script failed with a non-zero exit status."
+   echo "Exiting."
+   exit 1
+fi
+echo "Succesfully ran the read_poses script."
+
+
+# Final message
+echo "Finally open colmap by running 'colmap gui', click on 'File -> Import model' and chose the '$COLMAP_FOLDER/sparse/0/' folder."
+echo "Finished."
+exit 0

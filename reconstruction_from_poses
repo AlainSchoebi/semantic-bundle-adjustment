@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+
+# Python
+import numpy as np
+from pathlib import Path
+
+# COLMAP
+import pycolmap
+
+# Src
+from sba.tree_parser import TreeParser
+from sba.read_poses_utils import read_poses
+
+# Utils
+from sba.utils.pose import Pose
+from sba.utils.folder import create_folder
+
+# Logging
+from sba.utils.loggers import get_logger
+import logging
+logger = get_logger(__name__)
+
+def main(args):
+
+    # Set up logging
+    logger.setLevel(logging.DEBUG)
+    get_logger("sba").setLevel(logging.INFO)
+
+    # Folders
+    colmap_model = Path(args.input_colmap_model)
+    output_model = Path(args.output_model)
+
+    # Verify the paths
+    if not colmap_model.exists():
+        logger.error(f"The input colmap model folder '{str(colmap_model)}' doesn't exist.")
+        raise FileExistsError(f"The input colmap model folder '{str(colmap_model)}' doesn't exist.")
+    if not output_model.parent.exists():
+        raise FileExistsError(
+            f"The output folder's parent folder does not exist, " +
+            f"i.e. '{str(output_model.parent)}' does not exist."
+        )
+
+    # Read new poses
+    camera_poses = read_poses(args.camera_poses_path, args.camera_poses_format)
+
+    # Empty or create the output folder
+    create_folder(output_model)
+
+    # Load the COLMAP model
+    try:
+        reconstruction = pycolmap.Reconstruction(colmap_model)
+    except Exception as e:
+        logger.error(f"Could not open the colmap model at '{colmap_model}'. The error: {e}.")
+        raise
+    logger.info(f"Successfully imported colmap model from '{colmap_model}'.")
+    logger.debug(reconstruction.summary())
+    logger.debug("")
+
+    # Extract provided camera intrinsics (if provided)
+    fx, fy = args.camera_intrinsics[0], args.camera_intrinsics[1]
+    cx, cy = args.camera_intrinsics[2], args.camera_intrinsics[3]
+    if fx != fy:
+        logger.error(f"Camera intrinsics parameters fx ({fx}) and fy ({fy}) must be equal.")
+        raise ValueError(f"Camera intrinsics parameters fx ({fx}) and fy ({fy}) must be equal.")
+    if fx is not None:
+        logger.info(f"Camera intrinsics (fx: {fx}, fy: {fy}, cx:{cx}, cy:{cy}) provided. " +
+                    f"These will be used for the new reconstruction.")
+    else:
+        logger.info(f"Camera intrinsics not provided. The new reconstruction will use the original intrinsics.")
+
+
+    # Loop through the cameras
+    for _, camera in reconstruction.cameras.items():
+        logger.info(f"**Camera with id {camera.camera_id}**")
+        logger.info(f"  - model: {camera.model}")
+        logger.info(f"  - width: {camera.width}")
+        logger.info(f"  - height: {camera.height}")
+        logger.info(f"  - focal_length: {camera.focal_length}")
+        logger.info(f"  - principal_point_x: {camera.principal_point_x}")
+        logger.info(f"  - principal_point_y: {camera.principal_point_y}")
+        logger.info(f"  - params: {camera.params}")
+
+        # Set the camera intrinsics if provided
+        if fx is not None:
+            camera.focal_length = fx
+            camera.principal_point_x = cx
+            camera.principal_point_y = cy
+            logger.info(f"  - new params: {camera.params}")
+        else:
+            logger.info(f"  - new params: [unchanged]")
+        logger.info(f"")
+
+
+    # Noise standard deviation
+    noise_std = args.add_noise
+
+    # Loop through every image in the model
+    for _, image in reconstruction.images.items():
+
+        pose = Pose.from_colmap_image(image) # camera -> world
+        logger.info(f"**Image with id {image.image_id} and name: {image.name}**")
+        logger.info(f"  - camera_id: {image.camera_id}")
+        logger.info(f"  - original pose (world -> camera):")
+        logger.info(f"    - qvec(x, y, z, w): {image.cam_from_world.rotation.quat}")
+        logger.info(f"    - tvec: {image.cam_from_world.translation}")
+        logger.info(f"  - original pose (camera -> world) (computed):")
+        logger.info(f"    - qvec(w, x, y, z, w): {pose.quat_wxyz}")
+        logger.info(f"    - tvec: {pose.t}")
+
+        # Find corresponding provided camera pose (inefficient)
+        found_corresponding_camera = False
+        for camera_pose in camera_poses:
+            if camera_pose.name == image.name:
+
+                # Add noise
+                if not noise_std == 0 and not camera_pose.name == args.no_noise_camera_name:
+                    R_noisy = camera_pose.R
+                    t_noisy = camera_pose.t + np.random.normal(0, noise_std, 3)
+                    camera_pose = Pose(R_noisy, t_noisy)
+                    camera_pose.name = image.name
+
+                Pose.set_colmap_image_pose(image, camera_pose)
+                found_corresponding_camera = True
+                break
+
+        if not found_corresponding_camera:
+            logger.error(f"Could not find a corresponding camera pose for image '{image.name}'.")
+            raise ValueError(f"Could not find a corresponding camera pose for image '{image.name}'.")
+
+        new_pose = Pose.from_colmap_image(image) # for visualization
+        if noise_std == 0:
+            logger.info(f"  - new pose (world -> camera):")
+        else:
+            logger.info(f"  - new pose (world -> camera): [Added noise with std {noise_std}]")
+        logger.info(f"    - qvec(w, x, y, z): {new_pose.inverse.quat_wxyz}")
+        logger.info(f"    - tvec: {new_pose.inverse.t}")
+        logger.info(f"  - new pose (camera -> world) (computed):")
+        logger.info(f"    - qvec(w, x, y, z): {new_pose.quat_wxyz}")
+        logger.info(f"    - tvec: {new_pose.t}")
+        logger.info(f"")
+
+    # Save the modified reconstruction
+    create_folder(output_model / "text")
+    reconstruction.write(str(output_model))
+    reconstruction.write_text(str(output_model / "text"))
+    logger.info(f"Successfully saved the modified reconstruction to '{output_model}'.")
+
+if __name__ == "__main__":
+
+    parser = TreeParser(
+        description="Create a new colmap model for given camera poses and intrinsics."
+    )
+
+    parser.add_argument("--input_colmap_model", type=str, required=True, help = "Input colmap model folder.")
+
+    parser.add_argument("--camera_poses_path", type=str, required=True,
+                        help = "The path containing the new camera poses.")
+    parser.add_argument("--camera_poses_format", type=str,
+                        default="vulkan_text", choices=["vulkan_text", "colmap_text", "colmap_model"],
+                        help = "Format of the provided camera poses")
+
+    parser.add_argument("--camera_intrinsics", type=float, nargs=4, required=False,
+                        default=[None, None, None, None],
+                        help = "New camera intrinsics (if provided) in the following order: fx, fy, cx, fy.")
+
+    parser.add_argument("--add_noise", type=float, default=0, required=False,
+                        help = "Standard deviation of position noise to add to the camera poses. By default no noise."
+                        )
+
+    parser.add_argument("--no_noise_camera_name", type=str, default=None, required=False,
+                        help = "Specify one camera by its image name that will not be affected by the noise."
+                        )
+
+    parser.add_argument("--output_model", "-o", type=str, required=True,
+                        help = "Path of the colmap output folder containing the modified model."
+                             + "This folder will contain the new .bin files cameras, images, points3D.")
+
+    args = parser.parse_args()
+
+    main(args)

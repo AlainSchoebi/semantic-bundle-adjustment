@@ -1,0 +1,80 @@
+#!/bin/bash
+
+# !! PATHS TO CHOSE !!
+
+# Installation or source code of vulkan glasses
+VK_FOLDER=/home/alain/src/vulkan_vrglasses_csv
+
+# Source code of semantic-ba
+SEMANTICBA="$(dirname "$(readlink -f "$0")")"
+
+# The .csv flag file containing the whole configuration
+FLAGFILE=$SEMANTICBA/data/config/vk_glasses_csv_flags.txt
+
+# Data config folder
+DATACONFIG=$SEMANTICBA/data/config/
+
+# Path checks
+if [ ! -d $VK_FOLDER ]; then
+  echo "The VK_FOLDER directory '$VK_FOLDER' does not exist."
+  echo "Exiting"
+  exit 1
+fi
+if [ ! -e $FLAGFILE ]; then
+  echo "The FLAGFILE '$FLAGFILE' does not exist."
+  echo "Exiting"
+  exit 1
+fi
+if [ ! -e $DATACONFIG/image_poses.txt ]; then
+  echo "The DATACONFIG folder '$DATACONFIG' does not have a 'image_poses.txt' file."
+  echo "Exiting"
+  exit 1
+fi
+if [ ! -e $DATACONFIG/model_def_list.txt ]; then
+  echo "The DATACONFIG folder '$DATACONFIG' does not have a 'model_def_list.txt' file."
+  echo "Exiting"
+  exit 1
+fi
+if [ ! -e $DATACONFIG/model_poses_list.txt ]; then
+  echo "The DATACONFIG folder '$DATACONFIG' does not have a 'model_poses_list.txt' file."
+  echo "Exiting"
+  exit 1
+fi
+
+# Print
+echo "Folders (to change if needed): "
+echo "  - Source code of semantic-ba: '$SEMANTICBA'"
+echo "  - Vulkan flag file: '$FLAGFILE'"
+echo "  - Vulkan glasses source code: '$VK_FOLDER'"
+echo
+
+# Delete content of output directory 'last_dataset' if existing
+OUTPUT=$SEMANTICBA/data/results/last_dataset
+if [ -d $OUTPUT ]; then
+  rm -r $OUTPUT
+  echo "Directory $OUTPUT deleted successfully."
+else
+  echo "Directory $OUTPUT does not exist. Nothing to delete."
+fi
+mkdir $OUTPUT
+
+# Copy image poses, model def and model poses files (if located at the following directories)
+cp $DATACONFIG/image_poses.txt $OUTPUT
+cp $DATACONFIG/model_def_list.txt $OUTPUT
+cp $DATACONFIG/model_poses_list.txt $OUTPUT
+
+# Run Vulkan glasses
+$VK_FOLDER/vrglasses_for_robots/build/vrglasses4robots_csv --flagfile=$FLAGFILE
+
+# Extract .h5 files
+echo "Running .h5 uncompressor script:"
+python3 $SEMANTICBA/sba/h5_uncompress.py $OUTPUT/output
+if [ $? -eq 0 ]; then
+  echo "Succesfully ran .h5 uncompress script."
+else
+  echo "Running .h5 uncompress script failed."
+fi
+
+# Final message
+echo "Finished."
+exit 0

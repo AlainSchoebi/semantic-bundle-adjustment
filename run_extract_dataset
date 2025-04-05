@@ -1,0 +1,61 @@
+#!/bin/bash
+
+# The dataset folder must be a 'result/' folder from vulkan.
+# That is, it must contain an 'output/' folder containing .h5 files.
+
+# Get dataset path and remove trailing slash if it exists
+DATASET_PATH="${1%/}"
+
+# Source code of semantic-ba
+SEMANTICBA="$(dirname "$(readlink -f "$0")")"
+
+# Dataset path verifications
+if [ ! -d $DATASET_PATH ]
+then
+    echo "Dataset path '"$DATASET_PATH"' is not a directory. Please provide a valid path."
+    echo "Exiting."
+    exit 1
+fi
+if [ ! -d "$DATASET_PATH/output" ]
+then
+    echo "Dataset path '"$DATASET_PATH"' does not contain an '/output' folder. Please provide a valid path."
+    echo "Exiting."
+    exit 1
+fi
+
+# Check if dataset already contains uncompressed images
+if [ ! -d $DATASET_PATH"/output/color" ]; then
+   echo "Dataset path '"$DATASET_PATH"' does not contain any '/output/color' folder yet."
+   echo "Running .h5 uncompress script:"
+   python3 $SEMANTICBA/sba/h5_uncompress.py $DATASET_PATH"/output"
+   if [ $? -ne 0 ]; then
+      echo "Running h5_uncompressr script failed with a non-zero exit status."
+      echo "Exiting."
+      exit 1
+   fi
+   echo "Succesfully ran the .h5 uncompressor script."
+else
+   echo "Dataset path '"$DATASET_PATH"' already contains extracted .h5 files."
+fi
+
+# Check if dataset already contains .tiff images
+if [ ! -d $DATASET_PATH"/output/color_tiff" ]; then
+   echo "Dataset path '"$DATASET_PATH"' does not contain any '/output/color_tiff' folder yet."
+   echo "Running tiff_writer script:"
+   python3 $SEMANTICBA/sba/tiff_write.py $DATASET_PATH
+   if [ $? -ne 0 ]; then
+      echo "Running tiff_write script failed with a non-zero exit status."
+      echo "Exiting."
+      exit 1
+   fi
+   echo "Succesfully ran the tiff_write script."
+else
+   echo "Dataset path '"$DATASET_PATH"' already contains .tiff files."
+fi
+
+# Add GT reconstruction
+bash run_add_gt_reconstruction $DATASET_PATH
+
+# Final message
+echo "Finished."
+exit 0

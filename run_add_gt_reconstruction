@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# The dataset folder must be a 'result/' folder from vulkan.
+# That is, it must contain an 'output/' folder containing .h5 files.
+
+# Get dataset path and remove trailing slash if it exists
+DATASET_PATH="${1%/}"
+
+# Dataset path verifications
+if [ ! -d $DATASET_PATH ]
+then
+    echo "Dataset path '"$DATASET_PATH"' is not a directory. Please provide a valid path."
+    echo "Exiting."
+    exit 1
+fi
+if [ ! -e "$DATASET_PATH/image_poses.txt" ]
+then
+    echo "Dataset path '"$DATASET_PATH"' does not contain a 'image_poses.txt' file. Please provide a valid path."
+    echo "Exiting."
+    exit 1
+fi
+if [ ! -d "$DATASET_PATH/colmap_geo" ]
+then
+    echo "Dataset path '"$DATASET_PATH"' does not contain a 'colmap_geo' folder. Please provide a valid path."
+    echo "Exiting."
+    exit 1
+fi
+
+# Create GT reconstruction
+./reconstruction_from_poses \
+--input_colmap_model $DATASET_PATH/colmap_geo \
+--camera_poses_path $DATASET_PATH/image_poses.txt \
+--camera_poses_format vulkan_text \
+--camera_intrinsics 2559 2559 1536 1152 \
+-o $DATASET_PATH/colmap_gt

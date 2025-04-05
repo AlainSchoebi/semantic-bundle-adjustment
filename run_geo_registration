@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# The dataset folder must be a 'result/' folder from vulkan.
+# That is, it must contain an 'output/' folder containing .h5 files.
+
+# Get dataset path and remove trailing slash if it exists
+DATASET_PATH="${1%/}"
+COLMAP_FOLDER=$DATASET_PATH/colmap
+COLMAP_MODEL=$COLMAP_FOLDER/sparse/0
+GEO_FOLDER=$DATASET_PATH/colmap_geo
+
+# Source code of semantic-ba
+SEMANTICBA="$(dirname "$(readlink -f "$0")")"
+
+echo "Provided dataset path '"$DATASET_PATH"'."
+
+# Dataset path verifications
+if [ ! -d $DATASET_PATH ]
+then
+    echo "Dataset path '"$DATASET_PATH"' is not a directory. Please provide a valid path."
+    echo "Exiting."
+    exit 1
+fi
+if [ ! -d $DATASET_PATH"/output" ]
+then
+   echo "Dataset path '"$DATASET_PATH"' does not contain any '/output' folder."
+   echo "Exiting."
+   exit 1
+fi
+if [ ! -d $COLMAP_FOLDER ]
+then
+   echo "Dataset path '"$DATASET_PATH"' does not contain any '/colmap' folder."
+   echo "Exiting."
+   exit 1
+fi
+if [ ! -d $COLMAP_MODEL ]
+then
+   echo "Dataset path '"$DATASET_PATH"' does not contain any colmap model at the '$COLMAP_MODEL' folder."
+   echo "Please first run the 'colmap_reconstruction' script."
+   echo "Exiting."
+   exit 1
+fi
+
+# Create output geo folder
+mkdir -p $GEO_FOLDER
+
+# Run geo-register script to generate the registration used by colmap
+echo "Running geo-register script to generate the required registration text file used by colmap:"
+python3 $SEMANTICBA/sba/geo_registration.py \
+        --camera_poses_path $DATASET_PATH/image_poses.txt \
+        --camera_poses_format 'vulkan_text' \
+        -o $GEO_FOLDER/ground_truth_geo_registration.txt
+
+# Check the exit status of the Python script
+if [ $? -ne 0 ]; then
+    echo "Running python script 'geo_registration' failed with a non-zero exit status."
+    echo "Exiting."
+    exit 1
+fi
+echo "Successfully generated the registration file needed by colmap for the geo-registration, \
+located at '$GEO_FOLDER/ground_truth_geo_registration.txt'."
+
+# Run colmap model aligner with colmap 3.8
+colmap model_aligner \
+  --input_path $COLMAP_MODEL \
+  --output_path $GEO_FOLDER \
+  --ref_images_path $GEO_FOLDER/ground_truth_geo_registration.txt \
+  --ref_is_gps no \
+  --robust_alignment_max_error 0.1 \
+  --transform_path $GEO_FOLDER/transformation.txt
+if [ $? -ne 0 ]; then
+    echo "Running colmap model_aligner failed with a non-zero exit status."
+    echo "Exiting."
+    exit 1
+fi
+
+# Export georegistered model as .txt files
+mkdir -p $GEO_FOLDER/text
+colmap model_converter \
+    --input_path $GEO_FOLDER/ \
+    --output_path $GEO_FOLDER/text \
+    --output_type TXT
+echo "Successfully exported the model as text files under '$GEO_FOLDER/text/'"
+
+# Read poses
+python3 $SEMANTICBA/read_poses \
+       "$DATASET_PATH/image_poses.txt" "$GEO_FOLDER/text/images.txt" "$COLMAP_MODEL" \
+       --formats vulkan_text colmap_text colmap_model \
+       --topics /vrg_crop_gen_poses /colmap_poses_geo /colmap_poses \
+       -o $SEMANTICBA/out/last_geo_registration.bag
+
+# Final message
+echo "Finished."
+exit 0

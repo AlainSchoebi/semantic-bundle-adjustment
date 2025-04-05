@@ -1,0 +1,98 @@
+#!/bin/bash
+
+# Usage:
+# ./run_model_evaluation <test_reconstrution_folder> <gt_reconstruction_folder>
+
+# Folder containing the two reconstructions
+TEST_MODEL="${1%/}"
+GT_MODEL="${2%/}"
+
+# Temporary geo-registration text file
+GEO_REGISTER_FILE="/tmp/tmp_geo_registration.txt"
+
+#GEO_TEST_MODEL="$TEST_MODEL"_geo
+GEO_TEST_MODEL="/tmp/tmp_test_model_geo"
+
+# Source code of semantic-ba
+SEMANTICBA="."
+# SEMANTICBA=~/src/semantic-ba
+
+# Folder path verifications
+if [ ! -d $GT_MODEL ]; then
+    echo "Folder path '"$GT_MODEL"' is not a directory. Please provide a valid path."
+    echo "Exiting."
+    exit 1
+fi
+if [ ! -e "$GT_MODEL/images.bin" ]; then
+    echo "Folder path '"$GT_MODEL"' does not contain a COLMAP model. Please provide a valid path."
+    echo "Exiting."
+    exit 1
+fi
+if [ ! -d $TEST_MODEL ]; then
+    echo "Folder path '"$TEST_MODEL"' is not a directory. Please provide a valid path."
+   echo "Exiting."
+   exit 1
+fi
+if [ ! -e "$TEST_MODEL/images.bin" ]; then
+    echo "Folder path '"$TEST_MODEL"' does not contain a COLMAP model. Please provide a valid path."
+    echo "Exiting."
+    exit 1
+fi
+
+echo "COLMAP models:"
+echo "  - Test model '"$TEST_MODEL"'."
+echo "  - Ground truth model '"$TEST_MODEL"'."
+echo "  - Geo-registered test model (output) '"$GEO_TEST_MODEL"'."
+
+# Run geo-register script to generate the registration used by colmap
+echo "Running geo-register script to generate the required registration text file used by colmap:"
+python3 $SEMANTICBA/sba/geo_registration.py \
+        --camera_poses_path $GT_MODEL \
+        --camera_poses_format "colmap_model" \
+        -o $GEO_REGISTER_FILE
+# Create output geo folder
+# Check the exit status of the Python script
+if [ $? -ne 0 ]; then
+    echo "Running python script 'geo_registration' failed with a non-zero exit status."
+    echo "Exiting."
+    exit 1
+fi
+
+# Create output geo-registered folder
+mkdir -p $GEO_TEST_MODEL
+
+# Run colmap model aligner with colmap 3.8
+colmap model_aligner \
+  --input_path $TEST_MODEL \
+  --output_path $GEO_TEST_MODEL \
+  --ref_images_path $GEO_REGISTER_FILE \
+  --ref_is_gps no \
+  --robust_alignment_max_error 0.1
+if [ $? -ne 0 ]; then
+    echo "Running colmap model_aligner failed with a non-zero exit status."
+    echo "Exiting."
+    exit 1
+fi
+
+# Delete temporary geo-registration file
+rm $GEO_REGISTER_FILE
+
+echo
+
+# Read poses
+python3 $SEMANTICBA/read_poses \
+       "$GT_MODEL" "$TEST_MODEL" "$GEO_TEST_MODEL" \
+       --formats colmap_model colmap_model colmap_model \
+       --topics /gt_poses /test_poses /geo_test_poses \
+       -o $SEMANTICBA/out/last_model_evaluation.bag
+
+# Compare the models
+python3 $SEMANTICBA/sba/model_evaluation.py \
+        --camera_poses_path_1 $GT_MODEL \
+        --camera_poses_path_2 $GEO_TEST_MODEL \
+        --camera_poses_format_1 colmap_model \
+        --camera_poses_format_2 colmap_model
+
+# Final message
+echo "Finished."
+exit 0
